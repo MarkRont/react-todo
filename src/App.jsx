@@ -1,7 +1,8 @@
 /*
  * useState is a "Hook" — a special function from React that lets your
- * component remember things between re-renders.  When you call setTodos(...)
- * or setText(...), React re-renders the component with the new value.
+ * component remember things between re-renders.  When you call a setter
+ * like setTodos(...), React re-runs your component with the new value
+ * and updates the screen automatically.
  */
 import { useState } from 'react'
 import './App.css'
@@ -10,20 +11,35 @@ import './App.css'
  * ── TodoItem component ─────────────────────────────────────────────
  *
  * "Props" (short for properties) are how a parent component passes data
- * down to a child component.  Here, App passes each todo's data and
- * handler functions so TodoItem can display the todo and respond to
- * user actions without owning the data itself.
- *
- * Think of props like function arguments — they flow one way: parent → child.
+ * down to a child.  Think of props like function arguments — they flow
+ * one way: parent → child.  TodoItem never changes the data directly;
+ * it calls handler functions that the parent (App) provided.
  */
-function TodoItem({ todo, onToggle, onDelete }) {
+function TodoItem({
+  todo,
+  isEditing,    // true when this todo is in edit mode
+  editText,     // the current text inside the edit input
+  setEditText,  // setter to update editText as user types
+  onToggle,
+  onDelete,
+  onEditStart,
+  onEditSave,
+  onEditCancel,
+}) {
   return (
-    // Apply the "completed" CSS class when the todo is done
-    <li className={`todo-item ${todo.completed ? 'completed' : ''}`}>
-      {/*
-        * A "controlled" checkbox: its checked state comes from our data,
-        * and onChange tells React what to do when the user clicks it.
-        */}
+    /*
+     * We build the className string dynamically:
+     * - "completed" adds strikethrough + faded styling
+     * - "todo-exit" triggers the slide-out animation before removal
+     * The fade-in animation is always applied via CSS on .todo-item.
+     */
+    <li
+      className={
+        `todo-item` +
+        `${todo.completed ? ' completed' : ''}` +
+        `${todo.deleting ? ' todo-exit' : ''}`
+      }
+    >
       <input
         type="checkbox"
         className="todo-checkbox"
@@ -31,12 +47,41 @@ function TodoItem({ todo, onToggle, onDelete }) {
         onChange={() => onToggle(todo.id)}
       />
 
-      <span className="todo-text">{todo.text}</span>
+      {/*
+        * Conditional rendering: if this todo is being edited, show an
+        * <input> field.  Otherwise show the text in a <span>.
+        * This is a common React pattern — use a ternary (? :) to swap
+        * what gets rendered based on some condition.
+        */}
+      {isEditing ? (
+        /*
+         * autoFocus automatically puts the cursor in this input when
+         * it appears.  onKeyDown listens for specific key presses:
+         * Enter to save, Escape to cancel.
+         */
+        <input
+          type="text"
+          className="todo-edit-input"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onEditSave()
+            if (e.key === 'Escape') onEditCancel()
+          }}
+          onBlur={onEditSave}
+          autoFocus
+        />
+      ) : (
+        /*
+         * onDoubleClick fires when the user double-clicks.
+         * We use it to enter edit mode for this todo.
+         */
+        <span className="todo-text" onDoubleClick={() => onEditStart(todo)}>
+          {todo.text}
+        </span>
+      )}
 
-      <button
-        className="todo-delete"
-        onClick={() => onDelete(todo.id)}
-      >
+      <button className="todo-delete" onClick={() => onDelete(todo.id)}>
         Delete
       </button>
     </li>
@@ -47,55 +92,78 @@ function TodoItem({ todo, onToggle, onDelete }) {
  * ── App component (the main / root component) ─────────────────────
  */
 function App() {
-  /*
-   * useState returns a pair: [currentValue, setterFunction].
-   * - todos: the array of todo objects we're storing
-   * - setTodos: the function we call to update that array
-   * Every time we call setTodos, React re-renders the UI automatically.
-   */
-  const [todos, setTodos] = useState([])
+  // ── State ────────────────────────────────────────────────────────
+  // Each useState call stores one piece of data that can change over time.
+
+  const [todos, setTodos] = useState([])       // the full list of todo objects
+  const [text, setText] = useState('')          // what the user is typing in the "add" input
 
   /*
-   * This state holds whatever the user is currently typing in the input.
-   * This pattern is called a "controlled input" — React controls the
-   * value of the input field via state, so the UI always matches the data.
+   * Filter state: which tab is active — 'all', 'active', or 'completed'.
+   * We don't store separate filtered arrays.  Instead we "derive" the
+   * visible list from the main todos array (see visibleTodos below).
    */
-  const [text, setText] = useState('')
+  const [filter, setFilter] = useState('all')
 
-  // ── Handler functions ──────────────────────────────────────────
+  // Search state: text the user types to search/filter todos by name
+  const [search, setSearch] = useState('')
+
+  // Edit state: which todo (by id) is being edited, and the text in the edit input
+  const [editingId, setEditingId] = useState(null)
+  const [editText, setEditText] = useState('')
+
+  // ── Derived state ────────────────────────────────────────────────
+  /*
+   * "Derived state" means we compute a value from existing state instead
+   * of storing it separately.  This is a best practice in React — it keeps
+   * your data in one place (the `todos` array) and avoids bugs where
+   * separate copies get out of sync.
+   *
+   * The filtering pipeline:
+   * 1. First filter by tab (all / active / completed)
+   * 2. Then filter by search text (case-insensitive match)
+   *
+   * Because both filters are chained, they work together automatically —
+   * e.g., searching while on the "Active" tab only searches active todos.
+   */
+  const visibleTodos = todos
+    .filter((todo) => {
+      if (filter === 'active') return !todo.completed
+      if (filter === 'completed') return todo.completed
+      return true // 'all' — show everything
+    })
+    .filter((todo) =>
+      todo.text.toLowerCase().includes(search.toLowerCase())
+    )
+
+  // Count items left (always from the full list, not the filtered view)
+  const itemsLeft = todos.filter((todo) => !todo.completed).length
+  const hasCompleted = todos.some((todo) => todo.completed)
+
+  // ── Handler functions ────────────────────────────────────────────
 
   function handleAdd(e) {
-    /*
-     * Forms submit with a page reload by default.
-     * preventDefault() stops that so our React app stays in control.
-     */
-    e.preventDefault()
-
-    // Don't add empty todos
+    e.preventDefault()  // stop the browser from reloading the page
     if (text.trim() === '') return
 
-    // Create a new todo object and add it to the front of the list
     const newTodo = {
-      id: Date.now(),       // simple unique id using the current timestamp
+      id: Date.now(),
       text: text.trim(),
       completed: false,
+      deleting: false,  // used for the exit animation
     }
 
     /*
-     * We use the "spread" syntax (...) to create a new array that
-     * contains the new todo followed by all existing todos.
-     * In React, always create a NEW array/object instead of mutating
-     * the old one — this is how React knows something changed.
+     * Spread syntax (...) creates a NEW array — the new todo at the
+     * front, followed by all existing todos.  In React, always create
+     * new arrays/objects instead of mutating — that's how React detects changes.
      */
     setTodos([newTodo, ...todos])
-    setText('')  // clear the input after adding
+    setText('')
   }
 
   function handleToggle(id) {
-    /*
-     * .map() creates a new array where we flip the "completed" value
-     * for the todo that matches the given id, and leave the rest unchanged.
-     */
+    // .map() builds a new array, flipping `completed` for the matching todo
     setTodos(
       todos.map((todo) =>
         todo.id === id ? { ...todo, completed: !todo.completed } : todo
@@ -103,33 +171,80 @@ function App() {
     )
   }
 
+  /*
+   * Delete with animation:
+   * 1. First, mark the todo as "deleting" — this adds the .todo-exit CSS class
+   *    which triggers a 300ms slide-out animation.
+   * 2. After 300ms, actually remove it from state.
+   *
+   * setTimeout schedules code to run after a delay (in milliseconds).
+   * We use the callback form of setTodos (prev => ...) inside setTimeout
+   * so we always work with the latest state, not a stale snapshot.
+   */
   function handleDelete(id) {
-    // .filter() creates a new array with only the todos that DON'T match the id
-    setTodos(todos.filter((todo) => todo.id !== id))
+    // Step 1: mark as deleting (triggers CSS animation)
+    setTodos(
+      todos.map((todo) =>
+        todo.id === id ? { ...todo, deleting: true } : todo
+      )
+    )
+
+    // Step 2: remove after animation finishes
+    setTimeout(() => {
+      setTodos((prev) => prev.filter((todo) => todo.id !== id))
+    }, 300)
   }
 
-  // Count how many todos are not yet completed
-  const itemsLeft = todos.filter((todo) => !todo.completed).length
+  // Remove all completed todos at once
+  function handleClearCompleted() {
+    // Mark all completed todos as deleting for the animation
+    setTodos(
+      todos.map((todo) =>
+        todo.completed ? { ...todo, deleting: true } : todo
+      )
+    )
 
-  /*
-   * ── JSX (what gets rendered to the screen) ───────────────────
-   *
-   * JSX looks like HTML but it's actually JavaScript.  React turns
-   * this into real DOM elements.  A few differences from HTML:
-   * - Use className instead of class
-   * - Use {expression} to embed JavaScript values
-   * - Event handlers are camelCase: onClick, onChange, onSubmit
-   */
+    // Remove them after the animation
+    setTimeout(() => {
+      setTodos((prev) => prev.filter((todo) => !todo.completed))
+    }, 300)
+  }
+
+  // ── Edit handlers ──────────────────────────────────────────────
+
+  function handleEditStart(todo) {
+    setEditingId(todo.id)
+    setEditText(todo.text)
+  }
+
+  function handleEditSave() {
+    if (editText.trim() === '') {
+      // If the user clears the text, cancel instead of saving empty
+      handleEditCancel()
+      return
+    }
+
+    setTodos(
+      todos.map((todo) =>
+        todo.id === editingId ? { ...todo, text: editText.trim() } : todo
+      )
+    )
+    setEditingId(null)
+    setEditText('')
+  }
+
+  function handleEditCancel() {
+    setEditingId(null)
+    setEditText('')
+  }
+
+  // ── JSX (the UI) ────────────────────────────────────────────────
   return (
     <div className="app">
       <h1 className="app-title">My To-Do List</h1>
 
-      {/* Form for adding new todos */}
+      {/* ── Add form ── */}
       <form className="todo-form" onSubmit={handleAdd}>
-        {/*
-          * "Controlled input": the value always matches our `text` state,
-          * and onChange updates the state every time the user types.
-          */}
         <input
           type="text"
           className="todo-input"
@@ -142,36 +257,81 @@ function App() {
         </button>
       </form>
 
-      {/* Todo list */}
+      {/* ── Filter tabs ── */}
+      <div className="filter-tabs">
+        {['all', 'active', 'completed'].map((tab) => (
+          <button
+            key={tab}
+            className={`filter-tab${filter === tab ? ' active' : ''}`}
+            onClick={() => setFilter(tab)}
+          >
+            {/* Capitalize the first letter for display */}
+            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Search bar ── */}
+      <input
+        type="text"
+        className="search-input"
+        placeholder="Search todos..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+
+      {/* ── Todo list ── */}
       <ul className="todo-list">
         {/*
-          * .map() loops through the todos array and returns a <TodoItem>
-          * for each one.  The "key" prop is required by React so it can
-          * efficiently track which items changed, were added, or removed.
-          * Always use a unique, stable value (like an id) as the key.
+          * .map() loops through visibleTodos (the filtered list) and
+          * renders a <TodoItem> for each one.  The "key" prop helps React
+          * track which items changed — always use a unique id.
           */}
-        {todos.map((todo) => (
+        {visibleTodos.map((todo) => (
           <TodoItem
             key={todo.id}
             todo={todo}
+            isEditing={editingId === todo.id}
+            editText={editText}
+            setEditText={setEditText}
             onToggle={handleToggle}
             onDelete={handleDelete}
+            onEditStart={handleEditStart}
+            onEditSave={handleEditSave}
+            onEditCancel={handleEditCancel}
           />
         ))}
       </ul>
 
-      {/* Footer: only shows when there are todos */}
+      {/* ── Empty state ── */}
+      {visibleTodos.length === 0 && todos.length > 0 && (
+        <p className="todo-empty">No matching todos</p>
+      )}
+
+      {/* ── Footer ── */}
       {todos.length > 0 && (
-        <p className="todo-footer">
-          {itemsLeft} {itemsLeft === 1 ? 'item' : 'items'} left
-        </p>
+        <div className="todo-footer">
+          <span>
+            {itemsLeft} {itemsLeft === 1 ? 'item' : 'items'} left
+          </span>
+
+          {/*
+            * Conditional rendering with &&:
+            * The button only appears when hasCompleted is true.
+            * React skips rendering when the left side of && is false.
+            */}
+          {hasCompleted && (
+            <button
+              className="clear-completed-btn"
+              onClick={handleClearCompleted}
+            >
+              Clear completed
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
 }
 
-/*
- * "export default" makes this component available to other files.
- * main.jsx imports App and renders it into the page.
- */
 export default App
